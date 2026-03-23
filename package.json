@@ -1,0 +1,18 @@
+{
+  "name": "workflow-tasks",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npx trigger.dev@latest dev",
+    "deploy": "npx trigger.dev@latest deploy",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@trigger.dev/sdk": "^3",
+    "@mendable/firecrawl-js": "^1",
+    "zod": "^3"
+  },
+  "devDependencies": {
+    "typescript": "^5"
+  }
+}
