@@ -45,11 +45,6 @@ export const twilioProvisionSubAccount = task({
 
     logger.info("twilio-provision-sub-account started", { organization_id });
 
-    // Validate credentials early
-    if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) {
-      throw new Error("Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN");
-    }
-
     // Step 1: Fetch org
     const { data: org, error: fetchError } = await supabase
       .from("organizations")
@@ -72,6 +67,11 @@ export const twilioProvisionSubAccount = task({
         twilio_sub_account_sid: org.twilio_sub_account_sid,
         already_provisioned: true,
       };
+    }
+
+    // Validate Twilio credentials before calling API
+    if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) {
+      throw new Error("Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN");
     }
 
     // Step 3: Create Twilio sub-account (Task 3)
