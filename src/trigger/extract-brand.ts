@@ -133,8 +133,8 @@ async function fetchAndProcessImage(sourceUrl: string): Promise<Buffer> {
 
   const isSvg = contentType.includes("svg") || sourceUrl.endsWith(".svg");
   if (isSvg || raw.byteLength > CF_MAX_BYTES) {
-    const processed = await sharp(raw)
-      .resize(MAX_DIMENSION, MAX_DIMENSION, { fit: "inside", withoutEnlargement: true })
+    const processed = await sharp(raw, isSvg ? { density: 300 } : {})
+      .resize(MAX_DIMENSION, MAX_DIMENSION, { fit: "inside", withoutEnlargement: !isSvg })
       .png()
       .toBuffer();
 
