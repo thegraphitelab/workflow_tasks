@@ -324,7 +324,7 @@ export const extractBrand = task({
     const validated = PayloadSchema.parse(payload);
     const domain = cleanDomain(validated.domain);
 
-    logger.info("extract-brand started", { domain });
+    logger.info("extract-brand started", { raw: validated.domain, domain });
 
     // Step 1: Scrape with Firecrawl
     const scrapeUrl = `https://${domain}`;
