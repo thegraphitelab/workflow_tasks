@@ -322,14 +322,15 @@ export const extractBrand = task({
   },
   run: async (payload: Payload): Promise<ExtractBrandOutput> => {
     const validated = PayloadSchema.parse(payload);
-    const url = cleanDomain(validated.domain);
+    const domain = cleanDomain(validated.domain);
 
-    logger.info("extract-brand started", { domain: url });
+    logger.info("extract-brand started", { domain });
 
     // Step 1: Scrape with Firecrawl
-    logger.info("Scraping domain", { url });
-    const result = await getFirecrawl().scrapeUrl(url, {
-      // "branding" is a valid API format but not yet in the SDK type definitions
+    const scrapeUrl = `https://${domain}`;
+    logger.info("Scraping domain", { url: scrapeUrl });
+
+    const result = await getFirecrawl().scrapeUrl(scrapeUrl, {
       formats: ["branding" as "screenshot", "screenshot"],
     });
 
@@ -342,48 +343,30 @@ export const extractBrand = task({
     logger.info("Scrape complete", {
       hasLogo: !!brandImages.logo || !!branding?.logo,
       hasFavicon: !!brandImages.favicon,
+      hasOgImage: !!brandImages.ogImage,
       hasScreenshot: !!screenshot,
     });
 
-    // Step 2: Upload images to Cloudflare
-    const cfMeta: Record<string, string> = {
-      domain: validated.domain,
-    };
-
+    // Step 2: Process and upload images in parallel
     const rawLogoUrl = brandImages.logo || (branding?.logo as string | undefined);
-    const logoSourceUrl = resolveImageUrl(rawLogoUrl, url);
-    const faviconSourceUrl = resolveImageUrl(brandImages.favicon, url);
+    const logoSourceUrl = resolveImageUrl(rawLogoUrl, scrapeUrl);
+    const faviconSourceUrl = resolveImageUrl(brandImages.favicon, scrapeUrl);
+    const ogImageSourceUrl = resolveImageUrl(brandImages.ogImage, scrapeUrl);
 
-    let logo: CloudflareImage | null = null;
-    if (logoSourceUrl) {
-      logger.info("Uploading logo", { sourceUrl: logoSourceUrl });
-      logo = await uploadImage(logoSourceUrl, { ...cfMeta, type: "logo" });
-      logger.info("Logo uploaded", { id: logo.id, url: logo.url });
-    }
+    const [logoOk, faviconOk, ogImageOk, screenshotOk] = await Promise.all([
+      processAndUploadImage(domain, "logo.png", logoSourceUrl, {}),
+      processAndUploadImage(domain, "favicon.png", faviconSourceUrl, { isFavicon: true }),
+      processAndUploadImage(domain, "og-image.png", ogImageSourceUrl, {}),
+      processAndUploadScreenshot(domain, screenshot),
+    ]);
 
-    let favicon: CloudflareImage | null = null;
-    if (faviconSourceUrl) {
-      logger.info("Uploading favicon", { sourceUrl: faviconSourceUrl });
-      favicon = await uploadImage(faviconSourceUrl, { ...cfMeta, type: "favicon" });
-      logger.info("Favicon uploaded", { id: favicon.id, url: favicon.url });
-    }
+    logger.info("Image uploads complete", { logoOk, faviconOk, ogImageOk, screenshotOk });
 
-    let screenshotImage: CloudflareImage | null = null;
-    if (screenshot) {
-      logger.info("Uploading screenshot", { sourceUrl: screenshot });
-      screenshotImage = await uploadImage(screenshot, { ...cfMeta, type: "screenshot" });
-      logger.info("Screenshot uploaded", { id: screenshotImage.id, url: screenshotImage.url });
-    }
+    // Step 3: Build brand row and upsert to DB
+    const row = buildBrandRow(domain, branding, metadata);
+    await upsertBrand(row);
 
-    // Step 3: Assemble structured output
-    const output = extractOutput(
-      validated.domain,
-      branding,
-      metadata,
-      url
-    );
-
-    logger.info("extract-brand complete", { domain: validated.domain });
-    return output;
+    logger.info("extract-brand complete", { domain });
+    return row;
   },
 });
