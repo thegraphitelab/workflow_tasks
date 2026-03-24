@@ -104,22 +104,36 @@ function resolveImageUrl(imageUrl: string | undefined | null, baseUrl: string): 
 const MAX_DIMENSION = 2048;
 const FAVICON_SIZE = 512;
 
+const UNSUPPORTED_FORMATS = ["image/x-icon", "image/vnd.microsoft.icon"];
+
 async function fetchImageBuffer(sourceUrl: string): Promise<{ buffer: Buffer; isSvg: boolean }> {
   const res = await fetch(sourceUrl);
   if (!res.ok) {
     throw new Error(`Failed to fetch image (${res.status}): ${sourceUrl}`);
   }
   const contentType = res.headers.get("content-type") ?? "";
+
+  if (UNSUPPORTED_FORMATS.includes(contentType) || sourceUrl.endsWith(".ico")) {
+    throw new Error(`Unsupported image format: ${contentType || "ico"}`);
+  }
+
   const buffer = Buffer.from(await res.arrayBuffer());
   const isSvg = contentType.includes("svg") || sourceUrl.endsWith(".svg");
   logger.info("Image fetched", { sourceUrl, contentType, bytes: buffer.byteLength });
   return { buffer, isSvg };
 }
 
-function decodeScreenshotBuffer(dataUrl: string): Buffer {
-  // Screenshot comes as base64 data URL from Firecrawl
-  const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, "");
-  return Buffer.from(base64, "base64");
+async function fetchScreenshotBuffer(screenshot: string): Promise<Buffer> {
+  // Firecrawl returns screenshots as hosted URLs (not data URLs)
+  if (screenshot.startsWith("data:")) {
+    const base64 = screenshot.replace(/^data:image\/\w+;base64,/, "");
+    return Buffer.from(base64, "base64");
+  }
+  const res = await fetch(screenshot);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch screenshot (${res.status}): ${screenshot}`);
+  }
+  return Buffer.from(await res.arrayBuffer());
 }
 
 async function processImage(
@@ -199,7 +213,7 @@ async function processAndUploadScreenshot(
   if (!dataUrl) return false;
 
   try {
-    const buffer = decodeScreenshotBuffer(dataUrl);
+    const buffer = await fetchScreenshotBuffer(dataUrl);
     const png = await processImage(buffer, {});
     await uploadToStorage(domain, "screenshot.png", png);
     return true;
