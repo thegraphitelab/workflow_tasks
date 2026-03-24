@@ -57,8 +57,9 @@ firecrawl.scrapeUrl(`https://${domain}`, {
 | `branding.images.logo` / `branding.logo` | Logo source URL |
 | `branding.images.favicon` | Favicon source URL |
 | `branding.images.ogImage` | OG image source URL |
-| `screenshot` | Screenshot data URL |
-| `branding.colors` | `colors` JSONB column |
+| `screenshot` | Screenshot (base64 data URL — decoded via Buffer, not fetched) |
+| `branding.colorScheme` | `colors.scheme` (sibling of `branding.colors`, not nested) |
+| `branding.colors` | `colors` JSONB column (`text` mapped from `colors.textPrimary`) |
 | `branding.typography` | `typography` JSONB column |
 | `branding.spacing` | `spacing` JSONB column |
 | `branding.components` | `components` JSONB column |
@@ -77,7 +78,7 @@ All images are processed through sharp and stored as high-quality PNGs in the Su
 ### Processing pipeline
 
 - **SVGs:** Rendered at 600 DPI, resized to fit within 2048×2048, upscaling allowed for crisp rasterization
-- **Favicons:** Resized to minimum 512×512 using lanczos3 kernel for clean upscaling from typical 16×16 or 32×32 source sizes
+- **Favicons:** Upscaled to 512×512 using lanczos3 kernel (`withoutEnlargement: false`) for clean output from typical 16×16 or 32×32 sources. Larger favicons are resized down to fit 512×512.
 - **Other raster images:** Resized to fit within 2048×2048, `withoutEnlargement: true` (no upscaling of already-large images)
 - **Output format:** PNG for everything, no lossy compression
 
