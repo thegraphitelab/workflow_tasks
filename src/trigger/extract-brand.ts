@@ -77,12 +77,17 @@ interface ExtractBrandOutput {
 
 // --- Helpers ---
 
-function normalizeDomain(domain: string): string {
-  let url = domain.trim();
-  if (!url.startsWith("http://") && !url.startsWith("https://")) {
-    url = `https://${url}`;
-  }
-  return url.replace(/\/+$/, "");
+function cleanDomain(raw: string): string {
+  let d = raw.trim().toLowerCase();
+  // Remove protocol
+  d = d.replace(/^https?:\/\//, "");
+  // Remove paths, query strings, fragments
+  d = d.split(/[/?#]/)[0];
+  // Remove www. prefix
+  d = d.replace(/^www\./, "");
+  // Remove trailing dots/slashes
+  d = d.replace(/[./]+$/, "");
+  return d;
 }
 
 function resolveImageUrl(imageUrl: string | undefined | null, baseUrl: string): string | null {
@@ -97,35 +102,114 @@ function resolveImageUrl(imageUrl: string | undefined | null, baseUrl: string): 
 // --- Image processing ---
 
 const MAX_DIMENSION = 2048;
+const FAVICON_SIZE = 512;
 
-async function fetchAndProcessImage(sourceUrl: string): Promise<Buffer> {
+async function fetchImageBuffer(sourceUrl: string): Promise<{ buffer: Buffer; isSvg: boolean }> {
   const res = await fetch(sourceUrl);
   if (!res.ok) {
     throw new Error(`Failed to fetch image (${res.status}): ${sourceUrl}`);
   }
-
   const contentType = res.headers.get("content-type") ?? "";
-  const raw = Buffer.from(await res.arrayBuffer());
-
-  logger.info("Image fetched", { sourceUrl, contentType, bytes: raw.byteLength });
-
+  const buffer = Buffer.from(await res.arrayBuffer());
   const isSvg = contentType.includes("svg") || sourceUrl.endsWith(".svg");
-  if (isSvg) {
-    const processed = await sharp(raw, { density: 300 })
-      .resize(MAX_DIMENSION, MAX_DIMENSION, { fit: "inside", withoutEnlargement: false })
+  logger.info("Image fetched", { sourceUrl, contentType, bytes: buffer.byteLength });
+  return { buffer, isSvg };
+}
+
+function decodeScreenshotBuffer(dataUrl: string): Buffer {
+  // Screenshot comes as base64 data URL from Firecrawl
+  const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, "");
+  return Buffer.from(base64, "base64");
+}
+
+async function processImage(
+  buffer: Buffer,
+  opts: { isSvg?: boolean; isFavicon?: boolean }
+): Promise<Buffer> {
+  const { isSvg = false, isFavicon = false } = opts;
+
+  if (isFavicon) {
+    return sharp(buffer, isSvg ? { density: 600 } : {})
+      .resize(FAVICON_SIZE, FAVICON_SIZE, {
+        fit: "inside",
+        withoutEnlargement: false,
+        kernel: sharp.kernel.lanczos3,
+      })
       .png()
       .toBuffer();
-
-    logger.info("Image processed", {
-      originalBytes: raw.byteLength,
-      processedBytes: processed.byteLength,
-      wasSvg: isSvg,
-    });
-
-    return processed;
   }
 
-  return raw;
+  return sharp(buffer, isSvg ? { density: 600 } : {})
+    .resize(MAX_DIMENSION, MAX_DIMENSION, {
+      fit: "inside",
+      withoutEnlargement: !isSvg,
+    })
+    .png()
+    .toBuffer();
+}
+
+async function uploadToStorage(
+  domain: string,
+  fileName: string,
+  pngBuffer: Buffer
+): Promise<void> {
+  const path = `brands/${domain}/${fileName}`;
+  const { error } = await supabase.storage
+    .from("utility")
+    .upload(path, pngBuffer, {
+      contentType: "image/png",
+      upsert: true,
+    });
+
+  if (error) {
+    throw new Error(`Storage upload failed for ${path}: ${error.message}`);
+  }
+
+  logger.info("Image uploaded to storage", { path, bytes: pngBuffer.byteLength });
+}
+
+async function processAndUploadImage(
+  domain: string,
+  fileName: string,
+  sourceUrl: string | null,
+  opts: { isFavicon?: boolean }
+): Promise<boolean> {
+  if (!sourceUrl) return false;
+
+  try {
+    const { buffer, isSvg } = await fetchImageBuffer(sourceUrl);
+    const png = await processImage(buffer, { isSvg, isFavicon: opts.isFavicon });
+    await uploadToStorage(domain, fileName, png);
+    return true;
+  } catch (err) {
+    logger.warn("Image processing failed, skipping", {
+      domain,
+      fileName,
+      sourceUrl,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
+async function processAndUploadScreenshot(
+  domain: string,
+  dataUrl: string | undefined
+): Promise<boolean> {
+  if (!dataUrl) return false;
+
+  try {
+    const buffer = decodeScreenshotBuffer(dataUrl);
+    const png = await processImage(buffer, {});
+    await uploadToStorage(domain, "screenshot.png", png);
+    return true;
+  } catch (err) {
+    logger.warn("Screenshot processing failed, skipping", {
+      domain,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
 }
 
 // --- Extraction ---
@@ -226,7 +310,7 @@ export const extractBrand = task({
   },
   run: async (payload: Payload): Promise<ExtractBrandOutput> => {
     const validated = PayloadSchema.parse(payload);
-    const url = normalizeDomain(validated.domain);
+    const url = cleanDomain(validated.domain);
 
     logger.info("extract-brand started", { domain: url });
 
