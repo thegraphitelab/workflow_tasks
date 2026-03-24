@@ -103,10 +103,6 @@ interface SendGridSubUserResponse {
   credit_allocation: { type: string };
 }
 
-interface SendGridErrorResponse {
-  errors: { field: string | null; message: string }[];
-}
-
 function isUsernameCollision(status: number, body: string): boolean {
   // SendGrid returns 400 or sometimes 429 for duplicate usernames
   if (status !== 400 && status !== 429) return false;
