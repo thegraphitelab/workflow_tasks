@@ -214,11 +214,10 @@ async function processAndUploadScreenshot(
 
 // --- Extraction ---
 
-function extractOutput(
+function buildBrandRow(
   domain: string,
   branding: Record<string, unknown> | undefined,
-  metadata: Record<string, unknown> | undefined,
-  baseUrl: string
+  metadata: Record<string, unknown> | undefined
 ): ExtractBrandOutput {
   const colors = (branding?.colors ?? {}) as Record<string, string>;
   const typography = (branding?.typography ?? {}) as Record<string, unknown>;
@@ -245,9 +244,9 @@ function extractOutput(
 
   return {
     domain,
+    title: (metadata?.title as string) ?? null,
     description: (metadata?.description as string) ?? null,
     language: (metadata?.language as string) ?? null,
-    title: (metadata?.title as string) ?? null,
     logo_alt: brandImages.logoAlt ?? null,
     colors: {
       scheme: (branding?.colorScheme as "light" | "dark") ?? null,
@@ -292,6 +291,19 @@ function extractOutput(
       componentLibrary: designSystem.componentLibrary ?? null,
     },
   };
+}
+
+async function upsertBrand(row: ExtractBrandOutput): Promise<void> {
+  const { error } = await supabase
+    .schema("utility")
+    .from("brands")
+    .upsert(row, { onConflict: "domain" });
+
+  if (error) {
+    throw new Error(`Brand upsert failed for ${row.domain}: ${error.message}`);
+  }
+
+  logger.info("Brand upserted", { domain: row.domain });
 }
 
 // --- Task ---
