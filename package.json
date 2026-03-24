@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@mendable/firecrawl-js": "^1",
+    "@supabase/supabase-js": "^2.100.0",
     "@trigger.dev/sdk": "^4.4.3",
     "sharp": "^0.34.5",
     "zod": "^3"
