@@ -2,6 +2,7 @@ import { task, logger } from "@trigger.dev/sdk/v3";
 import { z } from "zod";
 import Firecrawl from "@mendable/firecrawl-js";
 import sharp from "sharp";
+import { createClient } from "@supabase/supabase-js";
 
 let _firecrawl: Firecrawl | null = null;
 function getFirecrawl(): Firecrawl {
@@ -11,21 +12,20 @@ function getFirecrawl(): Firecrawl {
   return _firecrawl;
 }
 
+const supabase = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SECRET_KEY!
+);
+
 // --- Payload ---
 
 const PayloadSchema = z.object({
   domain: z.string().min(1),
-  tenantId: z.string().optional(),
 });
 
 type Payload = z.infer<typeof PayloadSchema>;
 
 // --- Output ---
-
-interface CloudflareImage {
-  id: string;
-  url: string;
-}
 
 interface ButtonStyle {
   background: string | null;
@@ -37,16 +37,10 @@ interface ButtonStyle {
 
 interface ExtractBrandOutput {
   domain: string;
+  title: string | null;
   description: string | null;
   language: string | null;
-  title: string | null;
-  images: {
-    logo: CloudflareImage | null;
-    favicon: CloudflareImage | null;
-    screenshot: CloudflareImage | null;
-    ogImage: string | null;
-    logoAlt: string | null;
-  };
+  logo_alt: string | null;
   colors: {
     scheme: "light" | "dark" | null;
     primary: string | null;
@@ -55,40 +49,30 @@ interface ExtractBrandOutput {
     background: string | null;
     text: string | null;
     link: string | null;
-  };
+  } | null;
   typography: {
     fonts: { family: string; role: string }[];
-    fontFamilies: {
-      primary: string | null;
-      heading: string | null;
-    };
-    fontStacks: {
-      heading: string[];
-      body: string[];
-    };
-    fontSizes: {
-      h1: string | null;
-      h2: string | null;
-      body: string | null;
-    };
-  };
+    fontFamilies: { primary: string | null; heading: string | null };
+    fontStacks: { heading: string[]; body: string[] };
+    fontSizes: { h1: string | null; h2: string | null; body: string | null };
+  } | null;
   spacing: {
     baseUnit: number | null;
     borderRadius: string | null;
-  };
+  } | null;
   components: {
     buttonPrimary: ButtonStyle | null;
     buttonSecondary: ButtonStyle | null;
-  };
+  } | null;
   personality: {
     tone: string | null;
     energy: string | null;
     targetAudience: string | null;
-  };
-  designSystem: {
+  } | null;
+  design_system: {
     framework: string | null;
     componentLibrary: string | null;
-  };
+  } | null;
 }
 
 // --- Helpers ---
@@ -110,14 +94,8 @@ function resolveImageUrl(imageUrl: string | undefined | null, baseUrl: string): 
   }
 }
 
-function cfDeliveryUrl(imageId: string): string {
-  const accountHash = process.env.CLOUDFLARE_IMAGES_ACCOUNT_HASH;
-  return `https://imagedelivery.net/${accountHash}/${imageId}/public`;
-}
+// --- Image processing ---
 
-// --- Image processing & upload ---
-
-const CF_MAX_BYTES = 20_000_000;
 const MAX_DIMENSION = 2048;
 
 async function fetchAndProcessImage(sourceUrl: string): Promise<Buffer> {
@@ -132,9 +110,9 @@ async function fetchAndProcessImage(sourceUrl: string): Promise<Buffer> {
   logger.info("Image fetched", { sourceUrl, contentType, bytes: raw.byteLength });
 
   const isSvg = contentType.includes("svg") || sourceUrl.endsWith(".svg");
-  if (isSvg || raw.byteLength > CF_MAX_BYTES) {
-    const processed = await sharp(raw, isSvg ? { density: 300 } : {})
-      .resize(MAX_DIMENSION, MAX_DIMENSION, { fit: "inside", withoutEnlargement: !isSvg })
+  if (isSvg) {
+    const processed = await sharp(raw, { density: 300 })
+      .resize(MAX_DIMENSION, MAX_DIMENSION, { fit: "inside", withoutEnlargement: false })
       .png()
       .toBuffer();
 
@@ -150,57 +128,12 @@ async function fetchAndProcessImage(sourceUrl: string): Promise<Buffer> {
   return raw;
 }
 
-async function uploadImage(
-  sourceUrl: string,
-  metadata: Record<string, string>
-): Promise<CloudflareImage> {
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-  const apiToken = process.env.CLOUDFLARE_IMAGES_API_TOKEN;
-
-  if (!accountId || !apiToken) {
-    throw new Error("Missing CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_IMAGES_API_TOKEN");
-  }
-
-  const imageBuffer = await fetchAndProcessImage(sourceUrl);
-
-  const form = new FormData();
-  form.append("file", new Blob([new Uint8Array(imageBuffer)]), "image.png");
-  form.append("metadata", JSON.stringify(metadata));
-
-  const res = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${accountId}/images/v1`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiToken}` },
-      body: form,
-    }
-  );
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Cloudflare Images upload failed (${res.status}): ${body}`);
-  }
-
-  const json = (await res.json()) as {
-    success: boolean;
-    result: { id: string };
-  };
-
-  const id = json.result.id;
-  return { id, url: cfDeliveryUrl(id) };
-}
-
 // --- Extraction ---
 
 function extractOutput(
   domain: string,
   branding: Record<string, unknown> | undefined,
   metadata: Record<string, unknown> | undefined,
-  images: {
-    logo: CloudflareImage | null;
-    favicon: CloudflareImage | null;
-    screenshot: CloudflareImage | null;
-  },
   baseUrl: string
 ): ExtractBrandOutput {
   const colors = (branding?.colors ?? {}) as Record<string, string>;
@@ -231,13 +164,7 @@ function extractOutput(
     description: (metadata?.description as string) ?? null,
     language: (metadata?.language as string) ?? null,
     title: (metadata?.title as string) ?? null,
-    images: {
-      logo: images.logo,
-      favicon: images.favicon,
-      screenshot: images.screenshot,
-      ogImage: resolveImageUrl(brandImages.ogImage, baseUrl),
-      logoAlt: brandImages.logoAlt ?? null,
-    },
+    logo_alt: brandImages.logoAlt ?? null,
     colors: {
       scheme: (branding?.colorScheme as "light" | "dark") ?? null,
       primary: colors.primary ?? null,
@@ -276,7 +203,7 @@ function extractOutput(
       energy: personality.energy ?? null,
       targetAudience: personality.targetAudience ?? null,
     },
-    designSystem: {
+    design_system: {
       framework: designSystem.framework ?? null,
       componentLibrary: designSystem.componentLibrary ?? null,
     },
@@ -301,7 +228,7 @@ export const extractBrand = task({
     const validated = PayloadSchema.parse(payload);
     const url = normalizeDomain(validated.domain);
 
-    logger.info("extract-brand started", { domain: url, tenantId: validated.tenantId });
+    logger.info("extract-brand started", { domain: url });
 
     // Step 1: Scrape with Firecrawl
     logger.info("Scraping domain", { url });
@@ -325,7 +252,6 @@ export const extractBrand = task({
     // Step 2: Upload images to Cloudflare
     const cfMeta: Record<string, string> = {
       domain: validated.domain,
-      ...(validated.tenantId ? { tenant_id: validated.tenantId } : {}),
     };
 
     const rawLogoUrl = brandImages.logo || (branding?.logo as string | undefined);
@@ -358,7 +284,6 @@ export const extractBrand = task({
       validated.domain,
       branding,
       metadata,
-      { logo, favicon, screenshot: screenshotImage },
       url
     );
 
