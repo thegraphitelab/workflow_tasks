@@ -307,6 +307,31 @@ function buildBrandRow(
   };
 }
 
+async function updateScrapeStatus(
+  domain: string,
+  status: "processing" | "complete" | "error",
+  errorText?: string
+): Promise<boolean> {
+  const update: Record<string, unknown> = {
+    scrape_status: status,
+    scrape_error: status === "error" ? (errorText ?? null) : null,
+  };
+
+  const { data, error } = await supabase
+    .schema("utility")
+    .from("brands")
+    .update(update)
+    .eq("domain", domain)
+    .select("domain");
+
+  if (error) {
+    logger.warn("Failed to update scrape_status", { domain, status, error: error.message });
+    return false;
+  }
+
+  return (data?.length ?? 0) > 0;
+}
+
 async function upsertBrand(row: ExtractBrandOutput): Promise<void> {
   const { error } = await supabase
     .schema("utility")
@@ -340,47 +365,64 @@ export const extractBrand = task({
 
     logger.info("extract-brand started", { raw: validated.domain, domain });
 
-    // Step 1: Scrape with Firecrawl
-    const scrapeUrl = `https://${domain}`;
-    logger.info("Scraping domain", { url: scrapeUrl });
+    // Mark as processing and clear any previous error — bail if brand doesn't exist
+    const exists = await updateScrapeStatus(domain, "processing");
+    if (!exists) {
+      logger.info("Brand row not found, skipping", { domain });
+      return buildBrandRow(domain, undefined, undefined);
+    }
 
-    const result = await getFirecrawl().scrapeUrl(scrapeUrl, {
-      formats: ["branding" as "screenshot", "screenshot"],
-    });
+    try {
+      // Step 1: Scrape with Firecrawl
+      const scrapeUrl = `https://${domain}`;
+      logger.info("Scraping domain", { url: scrapeUrl });
 
-    const resultObj = result as unknown as Record<string, unknown>;
-    const branding = resultObj.branding as Record<string, unknown> | undefined;
-    const metadata = resultObj.metadata as Record<string, unknown> | undefined;
-    const screenshot = resultObj.screenshot as string | undefined;
-    const brandImages = (branding?.images ?? {}) as Record<string, string>;
+      const result = await getFirecrawl().scrapeUrl(scrapeUrl, {
+        formats: ["branding" as "screenshot", "screenshot"],
+      });
 
-    logger.info("Scrape complete", {
-      hasLogo: !!brandImages.logo || !!branding?.logo,
-      hasFavicon: !!brandImages.favicon,
-      hasOgImage: !!brandImages.ogImage,
-      hasScreenshot: !!screenshot,
-    });
+      const resultObj = result as unknown as Record<string, unknown>;
+      const branding = resultObj.branding as Record<string, unknown> | undefined;
+      const metadata = resultObj.metadata as Record<string, unknown> | undefined;
+      const screenshot = resultObj.screenshot as string | undefined;
+      const brandImages = (branding?.images ?? {}) as Record<string, string>;
 
-    // Step 2: Process and upload images in parallel
-    const rawLogoUrl = brandImages.logo || (branding?.logo as string | undefined);
-    const logoSourceUrl = resolveImageUrl(rawLogoUrl, scrapeUrl);
-    const faviconSourceUrl = resolveImageUrl(brandImages.favicon, scrapeUrl);
-    const ogImageSourceUrl = resolveImageUrl(brandImages.ogImage, scrapeUrl);
+      logger.info("Scrape complete", {
+        hasLogo: !!brandImages.logo || !!branding?.logo,
+        hasFavicon: !!brandImages.favicon,
+        hasOgImage: !!brandImages.ogImage,
+        hasScreenshot: !!screenshot,
+      });
 
-    const [logoOk, faviconOk, ogImageOk, screenshotOk] = await Promise.all([
-      processAndUploadImage(domain, "logo.png", logoSourceUrl, {}),
-      processAndUploadImage(domain, "favicon.png", faviconSourceUrl, { isFavicon: true }),
-      processAndUploadImage(domain, "og-image.png", ogImageSourceUrl, {}),
-      processAndUploadScreenshot(domain, screenshot),
-    ]);
+      // Step 2: Process and upload images in parallel
+      const rawLogoUrl = brandImages.logo || (branding?.logo as string | undefined);
+      const logoSourceUrl = resolveImageUrl(rawLogoUrl, scrapeUrl);
+      const faviconSourceUrl = resolveImageUrl(brandImages.favicon, scrapeUrl);
+      const ogImageSourceUrl = resolveImageUrl(brandImages.ogImage, scrapeUrl);
 
-    logger.info("Image uploads complete", { logoOk, faviconOk, ogImageOk, screenshotOk });
+      const [logoOk, faviconOk, ogImageOk, screenshotOk] = await Promise.all([
+        processAndUploadImage(domain, "logo.png", logoSourceUrl, {}),
+        processAndUploadImage(domain, "favicon.png", faviconSourceUrl, { isFavicon: true }),
+        processAndUploadImage(domain, "og-image.png", ogImageSourceUrl, {}),
+        processAndUploadScreenshot(domain, screenshot),
+      ]);
 
-    // Step 3: Build brand row and upsert to DB
-    const row = buildBrandRow(domain, branding, metadata);
-    await upsertBrand(row);
+      logger.info("Image uploads complete", { logoOk, faviconOk, ogImageOk, screenshotOk });
 
-    logger.info("extract-brand complete", { domain });
-    return row;
+      // Step 3: Build brand row and upsert to DB
+      const row = buildBrandRow(domain, branding, metadata);
+      await upsertBrand(row);
+
+      // Mark as complete
+      await updateScrapeStatus(domain, "complete");
+
+      logger.info("extract-brand complete", { domain });
+      return row;
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      await updateScrapeStatus(domain, "error", errorMessage);
+      logger.error("extract-brand failed", { domain, error: errorMessage });
+      throw err;
+    }
   },
 });
