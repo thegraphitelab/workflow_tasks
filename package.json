@@ -13,6 +13,7 @@
     "@supabase/supabase-js": "^2.100.0",
     "@trigger.dev/sdk": "^4.4.3",
     "ai": "^6.0.138",
+    "openai": "^6.33.0",
     "sharp": "^0.34.5",
     "zod": "^3"
   },

@@ -34,7 +34,6 @@ Caller → tasks.trigger("generate-brand-image", { images, prompt, path, filenam
   size?: string;           // Default: "1024x1024"
   quality?: string;        // Default: "auto"
   background?: string;     // Default: "auto"
-  moderation?: string;     // Default: "auto"
   input_fidelity?: string; // Default: "high"
 }
 ```
@@ -68,7 +67,6 @@ Caller → tasks.trigger("generate-brand-image", { images, prompt, path, filenam
   - `size`: caller's size or `"1024x1024"`
   - `quality`: caller's quality or `"auto"`
   - `background`: caller's background or `"auto"`
-  - `moderation`: caller's moderation or `"auto"`
   - `input_fidelity`: caller's input_fidelity or `"high"`
 - Response contains `data[0].b64_json` (base64-encoded PNG)
 
@@ -91,7 +89,7 @@ Caller → tasks.trigger("generate-brand-image", { images, prompt, path, filenam
 | Image URL fetch fails (network/404) | Throw — Trigger.dev task-level retry | Check URL validity |
 | Image too large (>50MB) | Throw with clear error | Provide smaller images |
 | OpenAI API error (transient, 500/503) | Throw — Trigger.dev task-level retry | Automatic |
-| OpenAI content moderation rejection | Throw with moderation error message | Adjust prompt or set moderation to "low" |
+| OpenAI content moderation rejection | Throw with moderation error message | Adjust prompt |
 | OpenAI rate limit (429) | Throw — Trigger.dev task-level retry with backoff | Automatic |
 | Supabase upload fails | Throw — Trigger.dev task-level retry | Check bucket exists and permissions |
 
