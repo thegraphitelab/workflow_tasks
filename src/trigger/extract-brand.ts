@@ -168,13 +168,15 @@ async function processImage(
 async function uploadToStorage(
   domain: string,
   fileName: string,
-  pngBuffer: Buffer
+  data: Buffer | string,
+  contentType = "image/png"
 ): Promise<void> {
   const path = `brands/${domain}/${fileName}`;
+  const body = typeof data === "string" ? Buffer.from(data, "utf-8") : data;
   const { error } = await supabase.storage
     .from("utility")
-    .upload(path, pngBuffer, {
-      contentType: "image/png",
+    .upload(path, body, {
+      contentType,
       upsert: true,
     });
 
@@ -182,7 +184,7 @@ async function uploadToStorage(
     throw new Error(`Storage upload failed for ${path}: ${error.message}`);
   }
 
-  logger.info("Image uploaded to storage", { path, bytes: pngBuffer.byteLength });
+  logger.info("File uploaded to storage", { path, bytes: body.byteLength });
 }
 
 async function processAndUploadImage(
@@ -472,6 +474,10 @@ export const extractBrand = task({
         processAndUploadImage(domain, "og-image.png", ogImageSourceUrl, {}),
         processAndUploadScreenshot(domain, screenshot),
       ]);
+
+      if (markdown) {
+        await uploadToStorage(domain, "page.md", markdown, "text/markdown");
+      }
 
       logger.info("Image uploads complete", { logoOk, faviconOk, ogImageOk, screenshotOk });
 
