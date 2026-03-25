@@ -1,5 +1,7 @@
 import { task, logger } from "@trigger.dev/sdk/v3";
 import { z } from "zod";
+import { generateText, Output } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
 import Firecrawl from "@mendable/firecrawl-js";
 import sharp from "sharp";
 import { createClient } from "@supabase/supabase-js";
@@ -37,6 +39,7 @@ interface ButtonStyle {
 
 interface ExtractBrandOutput {
   domain: string;
+  name: string | null;
   title: string | null;
   description: string | null;
   language: string | null;
@@ -149,7 +152,7 @@ async function processImage(
         withoutEnlargement: false,
         kernel: sharp.kernel.lanczos3,
       })
-      .png()
+      .png({ compressionLevel: 1, effort: 10 })
       .toBuffer();
   }
 
@@ -158,7 +161,7 @@ async function processImage(
       fit: "inside",
       withoutEnlargement: !isSvg,
     })
-    .png()
+    .png({ compressionLevel: 1, effort: 10 })
     .toBuffer();
 }
 
@@ -213,9 +216,20 @@ async function processAndUploadScreenshot(
   if (!dataUrl) return false;
 
   try {
-    const buffer = await fetchScreenshotBuffer(dataUrl);
-    const png = await processImage(buffer, {});
-    await uploadToStorage(domain, "screenshot.png", png);
+    const raw = await fetchScreenshotBuffer(dataUrl);
+
+    // Try uploading the raw image first for best quality
+    try {
+      await uploadToStorage(domain, "screenshot.png", raw);
+      logger.info("Screenshot uploaded raw", { domain, bytes: raw.byteLength });
+      return true;
+    } catch {
+      // Raw upload failed (likely too large) — fall back to compressed
+      logger.info("Raw screenshot upload failed, compressing", { domain, bytes: raw.byteLength });
+    }
+
+    const compressed = await processImage(raw, {});
+    await uploadToStorage(domain, "screenshot.png", compressed);
     return true;
   } catch (err) {
     logger.warn("Screenshot processing failed, skipping", {
@@ -226,12 +240,62 @@ async function processAndUploadScreenshot(
   }
 }
 
+// --- Brand name extraction ---
+
+const BrandNameSchema = z.object({
+  brand_name: z.string().nullable(),
+  confidence: z.enum(["high", "medium", "low"]),
+});
+
+async function extractBrandName(
+  domain: string,
+  metadata: Record<string, unknown> | undefined,
+  markdown: string | undefined
+): Promise<string | null> {
+  const context = [
+    metadata?.title && `Page title: ${metadata.title}`,
+    metadata?.description && `Meta description: ${metadata.description}`,
+    metadata?.ogTitle && `OG title: ${metadata.ogTitle}`,
+    markdown && `Page content (truncated):\n${markdown.slice(0, 2000)}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  if (!context) return null;
+
+  try {
+    const { output } = await generateText({
+      model: anthropic("claude-sonnet-4-5"),
+      output: Output.object({ schema: BrandNameSchema }),
+      prompt: `Extract the brand/company name from this website data for domain "${domain}".
+Return the official brand name (not the domain). If unclear, return null.
+
+${context}`,
+    });
+
+    logger.info("Brand name extracted", {
+      domain,
+      brand_name: output?.brand_name ?? null,
+      confidence: output?.confidence ?? "low",
+    });
+
+    return output?.brand_name ?? null;
+  } catch (err) {
+    logger.warn("Brand name extraction failed, skipping", {
+      domain,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
 // --- Extraction ---
 
 function buildBrandRow(
   domain: string,
   branding: Record<string, unknown> | undefined,
-  metadata: Record<string, unknown> | undefined
+  metadata: Record<string, unknown> | undefined,
+  brandName?: string | null
 ): ExtractBrandOutput {
   const colors = (branding?.colors ?? {}) as Record<string, string>;
   const typography = (branding?.typography ?? {}) as Record<string, unknown>;
@@ -258,6 +322,7 @@ function buildBrandRow(
 
   return {
     domain,
+    name: brandName ?? null,
     title: (metadata?.title as string) ?? null,
     description: (metadata?.description as string) ?? null,
     language: (metadata?.language as string) ?? null,
@@ -378,12 +443,13 @@ export const extractBrand = task({
       logger.info("Scraping domain", { url: scrapeUrl });
 
       const result = await getFirecrawl().scrapeUrl(scrapeUrl, {
-        formats: ["branding" as "screenshot", "screenshot"],
+        formats: ["branding" as "screenshot", "screenshot", "markdown"],
       });
 
       const resultObj = result as unknown as Record<string, unknown>;
       const branding = resultObj.branding as Record<string, unknown> | undefined;
       const metadata = resultObj.metadata as Record<string, unknown> | undefined;
+      const markdown = resultObj.markdown as string | undefined;
       const screenshot = resultObj.screenshot as string | undefined;
       const brandImages = (branding?.images ?? {}) as Record<string, string>;
 
@@ -409,8 +475,11 @@ export const extractBrand = task({
 
       logger.info("Image uploads complete", { logoOk, faviconOk, ogImageOk, screenshotOk });
 
-      // Step 3: Build brand row and upsert to DB
-      const row = buildBrandRow(domain, branding, metadata);
+      // Step 3: Extract brand name via Claude
+      const brandName = await extractBrandName(domain, metadata, markdown);
+
+      // Step 4: Build brand row and upsert to DB
+      const row = buildBrandRow(domain, branding, metadata, brandName);
       await upsertBrand(row);
 
       // Mark as complete

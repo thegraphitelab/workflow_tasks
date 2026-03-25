@@ -8,9 +8,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.64",
     "@mendable/firecrawl-js": "^1",
     "@supabase/supabase-js": "^2.100.0",
     "@trigger.dev/sdk": "^4.4.3",
+    "ai": "^6.0.138",
     "sharp": "^0.34.5",
     "zod": "^3"
   },
