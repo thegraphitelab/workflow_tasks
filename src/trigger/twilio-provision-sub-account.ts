@@ -97,7 +97,7 @@ export const twilioProvisionSubAccount = task({
 
     // Step 1: Fetch org
     const { data: org, error: fetchError } = await supabase
-      .from("organizations")
+      .schema("orgs").from("organizations")
       .select("id, name, slug, twilio_sub_account_sid")
       .eq("id", organization_id)
       .single();
@@ -135,7 +135,7 @@ export const twilioProvisionSubAccount = task({
 
     for (let attempt = 1; attempt <= MAX_DB_RETRIES; attempt++) {
       const { error: updateError } = await supabase
-        .from("organizations")
+        .schema("orgs").from("organizations")
         .update({ twilio_sub_account_sid: twilioAccount.sid })
         .eq("id", organization_id);
 

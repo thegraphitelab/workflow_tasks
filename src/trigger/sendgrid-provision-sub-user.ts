@@ -173,7 +173,7 @@ export const sendgridProvisionSubUser = task({
 
     // Step 1: Fetch org
     const { data: org, error: fetchError } = await supabase
-      .from("organizations")
+      .schema("orgs").from("organizations")
       .select("id, slug, sendgrid_sub_user")
       .eq("id", organization_id)
       .single();
@@ -213,7 +213,7 @@ export const sendgridProvisionSubUser = task({
 
     for (let attempt = 1; attempt <= MAX_DB_RETRIES; attempt++) {
       const { error: updateError } = await supabase
-        .from("organizations")
+        .schema("orgs").from("organizations")
         .update({ sendgrid_sub_user: username })
         .eq("id", organization_id);
 
